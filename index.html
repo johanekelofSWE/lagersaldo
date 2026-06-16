@@ -223,7 +223,7 @@ const $ = id => document.getElementById(id);
 
 // Förfyll SharePoint-länken
 document.addEventListener('DOMContentLoaded', () => {
-  $('xlsxUrl').value = 'https://runsvengruppen-my.sharepoint.com/:x:/p/johan_ekelof/IQBPeAhILMqrTrYZX5YWs8cAAVtXhrXpJXaJdoiugv1BsHg?e=CGt8Ae';
+  $('xlsxUrl').value = 'https://docs.google.com/spreadsheets/d/1KQupMGWeAw-B1KRaWBFHJGz0ZhcVeaQsG5XgJDZYUWU/edit?usp=sharing';
 });
 
 function setStatus(state, msg) {
@@ -252,78 +252,135 @@ function findColumn(headers, candidates) {
 
 // --- Load Excel ---
 function convertToDownloadUrl(url) {
+  // Google Sheets → använd gviz/tq CSV-endpoint som är helt öppen
+  const gsMatch = url.match(/docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (gsMatch) {
+    const id = gsMatch[1];
+    // gviz/tq returnerar JSON med all data, ingen inloggning krävs för publika ark
+    return { type: 'gviz', id };
+  }
+  // SharePoint / OneDrive for Business
   if (url.includes('sharepoint.com') || url.includes('my.sharepoint.com')) {
     try {
       const u = new URL(url);
       u.searchParams.set('download', '1');
       u.searchParams.delete('web');
-      return u.toString();
+      return { type: 'direct', url: u.toString() };
     } catch(e) {}
   }
-  if (url.includes('1drv.ms') || url.includes('onedrive.live.com')) {
+  return { type: 'direct', url };
+}
+
+async function fetchGoogleSheet(id) {
+  // gviz/tq endpoint – returnerar JSONP/JSON utan auth för publika ark
+  const url = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv`;
+  const proxies = [
+    url,
+    'https://corsproxy.io/?' + encodeURIComponent(url),
+    'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+  ];
+  for (const p of proxies) {
     try {
-      const u = new URL(url);
-      u.searchParams.set('download', '1');
-      return u.toString();
+      setStatus('loading', 'Hämtar data' + (p.includes('proxy') || p.includes('origins') ? ' via proxy' : '') + '...');
+      const resp = await fetch(p);
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      if (text.length < 10 || text.startsWith('<')) continue;
+      return text; // CSV-text
     } catch(e) {}
   }
-  return url;
+  return null;
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) return [];
+  // Hantera quoted fields
+  function parseLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        if (inQuotes && line[i+1] === '"') { current += '"'; i++; }
+        else inQuotes = !inQuotes;
+      } else if (c === ',' && !inQuotes) {
+        result.push(current); current = '';
+      } else current += c;
+    }
+    result.push(current);
+    return result;
+  }
+  const headers = parseLine(lines[0]);
+  return lines.slice(1).map(line => {
+    const vals = parseLine(line);
+    const obj = {};
+    headers.forEach((h, i) => obj[h.trim()] = (vals[i] || '').trim());
+    return obj;
+  });
 }
 
 async function loadExcel(url) {
   setStatus('loading', 'Hämtar fil...');
   $('loadBtn').disabled = true;
+  showErr('');
 
-  const downloadUrl = convertToDownloadUrl(url);
-
-  // Försök i ordning: direkt, sedan CORS-proxies
-  const attempts = [
-    downloadUrl,
-    'https://corsproxy.io/?' + encodeURIComponent(downloadUrl),
-    'https://api.allorigins.win/raw?url=' + encodeURIComponent(downloadUrl),
-    'https://corsproxy.io/?' + encodeURIComponent(url),
-    'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
-  ];
-
-  let arrayBuffer = null;
-  let lastErr = '';
-
-  for (const proxyUrl of attempts) {
-    try {
-      setStatus('loading', `Försöker hämta${proxyUrl.includes('corsproxy') || proxyUrl.includes('allorigins') ? ' via proxy' : ''}...`);
-      const resp = await fetch(proxyUrl);
-      if (!resp.ok) { lastErr = `HTTP ${resp.status}`; continue; }
-      const ct = resp.headers.get('content-type') || '';
-      // Skippa om vi fick HTML (felssida) istället för binärdata
-      if (ct.includes('text/html')) { lastErr = 'Fick HTML istället för fil (inloggning krävs?)'; continue; }
-      arrayBuffer = await resp.arrayBuffer();
-      if (arrayBuffer.byteLength < 100) { arrayBuffer = null; lastErr = 'Tom respons'; continue; }
-      break;
-    } catch(e) { lastErr = e.message; }
-  }
-
-  $('loadBtn').disabled = false;
-
-  if (!arrayBuffer) {
-    setStatus('error', '⚠️ ' + lastErr + ' — filen kräver troligen inloggning. Se tips nedan.');
-    showErr('SharePoint-filen måste delas som "Alla med länken kan visa". Gå till filen i SharePoint → Dela → Ändra till "Alla med länken".');
-    return;
-  }
+  const parsed = convertToDownloadUrl(url);
 
   try {
-    const wb = XLSX.read(arrayBuffer, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    let rows = [];
 
-    if (!rows.length) { setStatus('error', 'Filen är tom'); return; }
+    if (parsed.type === 'gviz') {
+      const csv = await fetchGoogleSheet(parsed.id);
+      if (!csv) {
+        $('loadBtn').disabled = false;
+        setStatus('error', 'Kunde inte hämta Google Sheets-data. Kontrollera att arket är publikt delat.');
+        showErr('Gå till Google Sheets → Dela → "Alla med länken kan visa"');
+        return;
+      }
+      rows = parseCSV(csv);
+    } else {
+      // Direct / SharePoint xlsx fetch
+      const attempts = [
+        parsed.url,
+        'https://corsproxy.io/?' + encodeURIComponent(parsed.url),
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent(parsed.url),
+      ];
+      let arrayBuffer = null;
+      let lastErr = '';
+      for (const proxyUrl of attempts) {
+        try {
+          setStatus('loading', 'Hämtar' + (proxyUrl.includes('proxy') || proxyUrl.includes('origins') ? ' via proxy' : '') + '...');
+          const resp = await fetch(proxyUrl);
+          if (!resp.ok) { lastErr = `HTTP ${resp.status}`; continue; }
+          const ct = resp.headers.get('content-type') || '';
+          if (ct.includes('text/html')) { lastErr = 'Fick inloggningssida'; continue; }
+          arrayBuffer = await resp.arrayBuffer();
+          if (arrayBuffer.byteLength < 100) { arrayBuffer = null; lastErr = 'Tom respons'; continue; }
+          break;
+        } catch(e) { lastErr = e.message; }
+      }
+      if (!arrayBuffer) {
+        $('loadBtn').disabled = false;
+        setStatus('error', 'Kunde inte hämta filen: ' + lastErr);
+        return;
+      }
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    }
+
+    if (!rows.length) { $('loadBtn').disabled = false; setStatus('error', 'Filen är tom'); return; }
 
     const headers = Object.keys(rows[0]);
-    const colButik    = findColumn(headers, ['butik','Butik','BUTIK','store','Store']);
-    const colArtnr    = findColumn(headers, ['artikelnummer','Artikelnummer','ARTIKELNUMMER','artnr','art.nr','ArtNr']);
-    const colBarcode  = findColumn(headers, ['streckkod','Streckkod','STRECKKOD','barcode','Barcode','ean','EAN','gtin','GTIN']);
-    const colSaldo    = findColumn(headers, ['saldo','Saldo','SALDO','stock','Stock','antal','Antal','qty','Qty']);
+    const colButik   = findColumn(headers, ['butik','Butik','BUTIK','store','Store']);
+    const colArtnr   = findColumn(headers, ['artikelnummer','Artikelnummer','ARTIKELNUMMER','artnr','art.nr','ArtNr']);
+    const colBarcode = findColumn(headers, ['streckkod','Streckkod','STRECKKOD','barcode','Barcode','ean','EAN','gtin','GTIN']);
+    const colSaldo   = findColumn(headers, ['saldo','Saldo','SALDO','stock','Stock','antal','Antal','qty','Qty']);
 
     if (!colButik || !colSaldo) {
+      $('loadBtn').disabled = false;
       setStatus('error', `Kolumnerna hittades inte. Hittade: ${headers.join(', ')}`);
       return;
     }
@@ -331,11 +388,10 @@ async function loadExcel(url) {
     allData = rows.map(r => ({
       butik:   (r[colButik]   || '').toString().trim(),
       artnr:   colArtnr   ? (r[colArtnr]  || '').toString().trim() : '',
-      barcode: colBarcode ? (r[colBarcode]|| '').toString().trim() : '',
+      barcode: colBarcode ? (r[colBarcode]|| '').toString().trim().replace(/\s+/g,'') : '',
       saldo:   r[colSaldo] !== '' ? Number(r[colSaldo]) : 0
     })).filter(r => r.butik);
 
-    // Populate shop selector
     const shops = [...new Set(allData.map(r => r.butik))].sort();
     const sel = $('shopSelect');
     sel.innerHTML = '<option value="">— Välj butik —</option>';
@@ -346,8 +402,9 @@ async function loadExcel(url) {
     $('scanBtn').disabled = false;
     showErr('');
   } catch(e) {
-    setStatus('error', 'Fel vid läsning av filen: ' + e.message);
+    setStatus('error', 'Fel: ' + e.message);
   }
+  $('loadBtn').disabled = false;
 }
 
 $('loadBtn').addEventListener('click', () => {
@@ -363,7 +420,7 @@ $('refreshBtn').addEventListener('click', () => {
 
 // --- Lookup ---
 function lookup(code) {
-  code = code.trim();
+  code = code.trim().replace(/\s+/g,'');
   if (!code) { showErr('Ange en streckkod'); return; }
 
   const shop = $('shopSelect').value;
