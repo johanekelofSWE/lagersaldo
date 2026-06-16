@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Lagersaldo</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -476,20 +477,16 @@ function lookup(code) {
 $('lookupBtn').addEventListener('click', () => lookup($('manualCode').value));
 $('manualCode').addEventListener('keydown', e => { if (e.key === 'Enter') lookup($('manualCode').value); });
 
-// --- Camera / BarcodeDetector ---
-async function startCamera() {
-  if (!('BarcodeDetector' in window)) {
-    showErr('Din webbläsare stödjer inte BarcodeDetector. Använd manuell inmatning eller Chrome/Android.');
-    return;
-  }
+// --- Camera / ZXing (fungerar på iPhone Safari + Android Chrome) ---
+let zxingReader = null;
 
+async function startCamera() {
   const shop = $('shopSelect').value;
   if (!shop) { showErr('Välj en butik innan du scannar'); return; }
 
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } });
-    const video = $('camVideo');
-    video.srcObject = cameraStream;
+    // Initiera ZXing
+    zxingReader = new ZXing.BrowserMultiFormatReader();
 
     const wrap = $('camWrap');
     wrap.classList.add('active');
@@ -499,39 +496,44 @@ async function startCamera() {
     btn.innerHTML = `<svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Stäng kamera`;
 
     scanning = true;
-    barcodeReader = new BarcodeDetector({ formats: ['ean_13','ean_8','code_128','code_39','qr_code','upc_a','upc_e'] });
 
     let lastCode = '';
     let lastTime = 0;
 
-    async function scanFrame() {
-      if (!scanning) return;
-      try {
-        const barcodes = await barcodeReader.detect(video);
-        if (barcodes.length > 0) {
-          const code = barcodes[0].rawValue;
-          const now = Date.now();
-          if (code !== lastCode || now - lastTime > 3000) {
-            lastCode = code;
-            lastTime = now;
-            $('manualCode').value = code;
-            lookup(code);
-          }
-        }
-      } catch(e) {}
-      if (scanning) requestAnimationFrame(scanFrame);
-    }
+    // Hämta kameraenheter och välj bakre kamera
+    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+    // Försök hitta bakre kamera
+    const backCamera = devices.find(d =>
+      d.label.toLowerCase().includes('back') ||
+      d.label.toLowerCase().includes('bak') ||
+      d.label.toLowerCase().includes('rear') ||
+      d.label.toLowerCase().includes('environment')
+    ) || devices[devices.length - 1] || devices[0];
 
-    video.addEventListener('loadedmetadata', () => requestAnimationFrame(scanFrame), { once: true });
+    const deviceId = backCamera ? backCamera.deviceId : undefined;
+
+    await zxingReader.decodeFromVideoDevice(deviceId, 'camVideo', (result, err) => {
+      if (result) {
+        const code = result.getText();
+        const now = Date.now();
+        if (code !== lastCode || now - lastTime > 3000) {
+          lastCode = code;
+          lastTime = now;
+          $('manualCode').value = code;
+          lookup(code);
+        }
+      }
+    });
 
   } catch(e) {
-    showErr('Kameraåtkomst nekad eller inte tillgänglig: ' + e.message);
+    stopCamera();
+    showErr('Kameraåtkomst nekad: ' + e.message);
   }
 }
 
 function stopCamera() {
   scanning = false;
-  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
+  if (zxingReader) { zxingReader.reset(); zxingReader = null; }
   $('camWrap').classList.remove('active');
   const btn = $('scanBtn');
   btn.classList.remove('stop');
