@@ -500,30 +500,22 @@ async function startCamera() {
     let lastCode = '';
     let lastTime = 0;
 
-    // Hämta kameraenheter och välj bakre kamera
-    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
-    // Försök hitta bakre kamera
-    const backCamera = devices.find(d =>
-      d.label.toLowerCase().includes('back') ||
-      d.label.toLowerCase().includes('bak') ||
-      d.label.toLowerCase().includes('rear') ||
-      d.label.toLowerCase().includes('environment')
-    ) || devices[devices.length - 1] || devices[0];
-
-    const deviceId = backCamera ? backCamera.deviceId : undefined;
-
-    await zxingReader.decodeFromVideoDevice(deviceId, 'camVideo', (result, err) => {
-      if (result) {
-        const code = result.getText();
-        const now = Date.now();
-        if (code !== lastCode || now - lastTime > 3000) {
-          lastCode = code;
-          lastTime = now;
-          $('manualCode').value = code;
-          lookup(code);
+    await zxingReader.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } } },
+      'camVideo',
+      (result, err) => {
+        if (result) {
+          const code = result.getText();
+          const now = Date.now();
+          if (code !== lastCode || now - lastTime > 3000) {
+            lastCode = code;
+            lastTime = now;
+            $('manualCode').value = code;
+            lookup(code);
+          }
         }
       }
-    });
+    );
 
   } catch(e) {
     stopCamera();
