@@ -207,6 +207,14 @@
             <div class="res-cell-label">Butik</div>
             <div class="res-cell-value" id="resButik">—</div>
           </div>
+          <div class="res-cell" id="resNamnCell" style="display:none">
+            <div class="res-cell-label">Artikelnamn</div>
+            <div class="res-cell-value" id="resNamn">—</div>
+          </div>
+          <div class="res-cell" id="resSaldoCLCell" style="display:none">
+            <div class="res-cell-label">Saldo CL</div>
+            <div class="res-cell-value" id="resSaldoCL">—</div>
+          </div>
         </div>
       </div>
     </div>
@@ -379,6 +387,8 @@ async function loadExcel(url) {
     const colArtnr   = findColumn(headers, ['artikelnummer','Artikelnummer','ARTIKELNUMMER','artnr','art.nr','ArtNr']);
     const colBarcode = findColumn(headers, ['streckkod','Streckkod','STRECKKOD','barcode','Barcode','ean','EAN','gtin','GTIN']);
     const colSaldo   = findColumn(headers, ['saldo','Saldo','SALDO','stock','Stock','antal','Antal','qty','Qty']);
+    const colNamn    = findColumn(headers, ['artikelnamn','Artikelnamn','ARTIKELNAMN','namn','Namn','name','Name']);
+    const colSaldoCL = findColumn(headers, ['saldo cl','Saldo CL','SALDO CL','saldocl','SaldoCL','cl','CL','centrallager','Centrallager']);
 
     if (!colButik || !colSaldo) {
       $('loadBtn').disabled = false;
@@ -390,7 +400,9 @@ async function loadExcel(url) {
       butik:   (r[colButik]   || '').toString().trim(),
       artnr:   colArtnr   ? (r[colArtnr]  || '').toString().trim() : '',
       barcode: colBarcode ? (r[colBarcode]|| '').toString().trim().replace(/\s+/g,'') : '',
-      saldo:   r[colSaldo] !== '' ? Number(r[colSaldo]) : 0
+      saldo:   r[colSaldo] !== '' ? Number(r[colSaldo]) : 0,
+      namn:    colNamn    ? (r[colNamn]   || '').toString().trim() : '',
+      saldoCL: colSaldoCL ? (r[colSaldoCL] !== '' ? Number(r[colSaldoCL]) : null) : null
     })).filter(r => r.butik);
 
     const shops = [...new Set(allData.map(r => r.butik))].sort();
@@ -457,19 +469,34 @@ function lookup(code) {
     resSaldo.textContent = '—';
     resArtnr.textContent = '—';
     resButik.textContent = shop;
+    $('resNamnCell').style.display = 'none';
+    $('resSaldoCLCell').style.display = 'none';
   } else {
     const item = matches[0];
     card.className = 'result found';
     resName.className = 'result-name';
     resBadge.className = 'shop-badge';
     resSaldo.className = 'saldo-num';
-    resName.textContent = item.artnr || item.barcode || code;
+    resName.textContent = item.namn || item.artnr || item.barcode || code;
     resSub.textContent = 'Streckkod: ' + (item.barcode || code);
     resBadge.textContent = item.butik;
     resSaldo.textContent = item.saldo.toString();
     resArtnr.textContent = item.artnr || '—';
     resButik.textContent = item.butik;
-    // scroll to result
+    // Artikelnamn
+    if (item.namn) {
+      $('resNamn').textContent = item.namn;
+      $('resNamnCell').style.display = 'block';
+    } else {
+      $('resNamnCell').style.display = 'none';
+    }
+    // Saldo CL
+    if (item.saldoCL !== null) {
+      $('resSaldoCL').textContent = item.saldoCL.toString();
+      $('resSaldoCLCell').style.display = 'block';
+    } else {
+      $('resSaldoCLCell').style.display = 'none';
+    }
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 }
